@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Breach Report — Demo</title>
+  <style>
+    body { font-family: Inter, system-ui, Arial; margin:0; background:#fafafa; color:#111; }
+    .container { max-width:1100px; margin:28px auto; padding:18px; }
+    .card { background:white; border-radius:12px; box-shadow:0 8px 28px rgba(12,20,30,0.06); padding:18px; margin-bottom:18px; }
+    input[type="email"]{width:360px;padding:10px;border-radius:8px;border:1px solid #ddd}
+    button{padding:10px 14px;border-radius:8px;border:0;background:#ff6b6b;color:white;font-weight:600;cursor:pointer}
+    .muted{color:#666}
+    .breach-list{display:flex;gap:12px;flex-wrap:wrap}
+    .breach-item{flex:1 1 300px;border:1px solid #f1f1f1;padding:12px;border-radius:8px}
+    .score-row{display:flex;align-items:center;gap:18px}
+    .bar{height:12px;background:#eee;border-radius:8px;overflow:hidden;width:320px}
+    .bar-fill{height:100%;width:0;background:#ff8a00;border-radius:8px}
+    table{width:100%;border-collapse:collapse}
+    th,td{padding:8px;border-bottom:1px solid #efefef;text-align:left}
+    pre{background:#f7f7f9;padding:12px;border-radius:8px;overflow:auto}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="card">
+      <h2>Breach Lookup</h2>
+      <p class="muted">Paste an email to see exposed breaches, risk score, and recommended actions.</p>
+      <div style="display:flex;gap:8px;align-items:center">
+        <input id="email" type="email" placeholder="test@example.co" />
+        <button id="search">Search</button>
+        <label style="margin-left:8px"><input id="showRaw" type="checkbox" /> Show raw JSON</label>
+      </div>
+      <div style="margin-top:10px">
+        <label>Verify email to view sensitive breaches: </label>
+        <button id="requestVerify">Request token</button>
+        <input id="verifyToken" placeholder="token" style="width:120px;padding:8px;border-radius:6px;border:1px solid #ddd" />
+        <button id="verifyBtn">Verify</button>
+        <span id="verifiedBadge" style="margin-left:12px;color:green;display:none">Verified ✓</span>
+      </div>
+    </div>
+
+    <div id="reportArea"></div>
+
+    <div id="rawArea" class="card" style="display:none">
+      <h3>Raw JSON</h3>
+      <pre id="raw"></pre>
+    </div>
+  </div>
+
+<script>
+const api = (path, opts) => fetch(path, opts).then(r => r.json());
+
+let verifiedEmails = new Set();
+
+document.getElementById('search').onclick = async () => {
+  const email = document.getElementById('email').value.trim();
+  if (!email) return alert('enter email');
+  const includeSensitive = verifiedEmails.has(email);
+  const resp = await api('/api/report', {
+    method:'POST',
+    headers:{'content-type':'application/json'},
+    body: JSON.stringify({ email, includeSensitive })
+  });
+  if (resp.error) return alert(resp.error);
+  renderReport(resp);
+  if (document.getElementById('showRaw').checked) {
+    document.getElementById('rawArea').style.display = 'block';
+    document.getElementById('raw').textContent = JSON.stringify(resp.raw, null, 2);
+  } else {
+    document.getElementById('rawArea').style.display = 'none';
+  }
+};
+
+document.getElementById('requestVerify').onclick = async () => {
+  const email = document.getElementById('email').value.trim();
+  if (!email) return alert('enter email to request token');
+  const resp = await api('/api/request-verify', {
+    method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ email })
+  });
+  if (resp.token) {
+    alert('Demo token returned (for local demo): ' + resp.token + '\nUse it in the token field and click Verify.');
+  } else if (resp.ok) {
+    alert('Verification token sent to email (if SMTP configured).');
+  } else {
+    alert('Request failed');
+  }
+};
+
+document.getElementById('verifyBtn').onclick = async () => {
+  const email = document.getElementById('email').value.trim();
+  const token = document.getElementById('verifyToken').value.trim();
+  if (!email || !token) return alert('enter email and token');
+  const resp = await api('/api/verify-token', {
+    method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ email, token })
+  });
+  if (resp.ok) {
+    verifiedEmails.add(email);
+    document.getElementById('verifiedBadge').style.display = 'inline';
+    alert('Email verified (demo). Now re-run search to see sensitive breaches.');
+  } else {
+    alert('Verify failed: ' + (resp.error || JSON.stringify(resp)));
+  }
+};
+
+function renderReport(resp) {
+  const area = document.getElementById('reportArea');
+  area.innerHTML = '';
+
+  const top = document.createElement('div');
+  top.className = 'card';
+  top.innerHTML = `<h3>Searched Email <small style="color:#666">${resp.email}</small></h3>
+    <p><strong>Exposed Breaches</strong> ${resp.totalExposed}</p>`;
+  // breach names quick
+  const names = (resp.breachNames || []).join(', ');
+  top.innerHTML += `<p>${names || 'No breaches found'}</p>`;
+  area.appendChild(top);
+
+  // score block
+  const scoreCard = document.createElement('div');
+  scoreCard.className = 'card';
+  scoreCard.innerHTML = `<div class="score-row"><div>
+    <h4>Your Risk Score: ${resp.riskScore}</h4>
+    <div class="bar"><div class="bar-fill" id="barFill" style="width:${resp.riskScore}%"></div></div>
+    <small class="muted">0 20 40 60 80 100</small>
+    </div>
+    <div style="flex:1">
+      <h4>Recommendations</h4>
+      <ul id="recs"></ul>
+    </div></div>`;
+  area.appendChild(scoreCard);
+  const recs = document.getElementById('recs');
+  (resp.recommendations || []).forEach(r => {
+    const li = document.createElement('li');
+    li.textContent = r.title + ' — ' + r.desc;
+    recs.appendChild(li);
+  });
+
+  // detailed breaches
+  const detail = document.createElement('div'); detail.className='card';
+  detail.innerHTML = '<h4>Data Breaches Quick Information</h4>';
+  const table = document.createElement('table');
+  table.innerHTML = `<thead><tr><th>Breach</th><th>Details</th><th>Exposed Records</th></tr></thead><tbody id="tb"></tbody>`;
+  detail.appendChild(table);
+  area.appendChild(detail);
+  const tb = document.getElementById('tb');
+  (resp.breaches||[]).forEach(b => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td><strong>${b.name}</strong><div style="font-size:12px;color:#666">${b.industry || ''}</div></td>
+      <td><div style="max-width:520px">${b.description}</div><div style="font-size:12px;color:#666;margin-top:6px">Exposed data: ${ (b.dataClasses||[]).join(', ')}</div></td>
+      <td style="width:140px">${b.pwnCount?.toLocaleString?.() || b.pwnCount}</td>`;
+    tb.appendChild(tr);
+  });
+
+  // categories summary
+  const catCard = document.createElement('div');
+  catCard.className='card';
+  catCard.innerHTML = `<h4>Your Exposed Data Sorted by Categories</h4>`;
+  const list = document.createElement('div');
+  for (const k of Object.keys(resp.categories || {})) {
+    const v = resp.categories[k];
+    const p = document.createElement('div'); p.textContent = `${k}: ${v}`; list.appendChild(p);
+  }
+  catCard.appendChild(list);
+  area.appendChild(catCard);
+}
+</script>
+</body>
+</html>
